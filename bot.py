@@ -15,6 +15,9 @@ import asyncio
 import logging
 import sys
 
+logging.basicConfig(level=logging.INFO)
+
+
 class DiscordBot():
 
     def __init__(self, humansupport_name, bothelp_name, guild_name, questions_list):
@@ -37,13 +40,14 @@ class DiscordBot():
         self.guild_name = guild_name
         self.question_lists = questions_list
         self.bot_task = None
+        self.loop = asyncio.get_event_loop()
+        self.runtime_exception = None
 
     def setup_bot_commands(self):
         # Event handler for when the bot is ready
         @self.bot.event
         async def on_ready():
             logging.info(f'Logged in as {self.bot.user.name}')
-            await self.human_support("When does Groq's paid plan come out?")
 
         @self.bot.event
         async def on_error(event_method, *args, **kwargs):
@@ -86,7 +90,7 @@ class DiscordBot():
     
     async def human_support(self, question):
         human_support_channel = self.get_channel(self.humansupport_name)
-        support_message = await human_support_channel.send(question)
+        support_message = await human_support_channel.send(question.content)
         await support_message.add_reaction("⭐")
 
     #split up process to run in parallel
@@ -110,7 +114,7 @@ class DiscordBot():
         """Starts the bot as an asyncio task."""
         logging.info("Starting bot...")
         try:
-            await self.bot.start(self.BotToken)
+            await self.bot.start(self.TOKEN)
             logging.info("Bot started successfully.")
         except Exception as e:
             logging.error(f"Exception in bot start: {e}")
@@ -129,12 +133,20 @@ class DiscordBot():
             except asyncio.CancelledError:
                 pass 
 
-def main():
+async def main():
     questions_list = []
     bot = DiscordBot("escalate-to-human", "ask-bot-help", "AV AIChatbot Server", questions_list)
-    bot.bot_run()
+    await bot.start()
+    await asyncio.sleep(10)
     logging.info("Running")
     
 
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.run(main())
+    except asyncio.CancelledError:
+        logging.error("Task has been cancelled")
+    except Exception as e:
+        logging.error(f"Exception caught : {e}")
+    finally:
+        pass
