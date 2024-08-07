@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 import asyncio
 import logging
 import sys
+import json
 
 logging.basicConfig(level=logging.INFO)
 
@@ -42,12 +43,86 @@ class DiscordBot():
         self.bot_task = None
         self.loop = asyncio.get_event_loop()
         self.runtime_exception = None
+        self.thread_contexts = {}
+        self.file_path="feedback.txt"
+        self.thumbsup, self.thumbsdown = self.load_variables()
+        self.guildid=None
+        
 
+    def load_variables(self):
+        try:
+            with open(self.file_path, 'r') as file:
+                data = json.load(file)
+                var1 = data.get('thumbsup', 0)
+                var2 = data.get('thumbsdown', 0)
+                return var1, var2
+        except FileNotFoundError:
+            self.thumbsup=0
+            self.thumbsdown=0
+            self.save_variables()  # Create the file with initial values
+            return 0,0
+
+    # Function to save variables to a text file
+    def save_variables(self):
+        #print("i am here")
+        #print(self.thumbsup, self.thumbsdown)
+        with open(self.file_path, 'w') as file:
+            json.dump({'thumbsup': self.thumbsup, 'thumbsdown': self.thumbsdown}, file)
+
+    # Function to update variables
+    def update_variables(self, thumbsup_change, thumbsdown_change):
+        self.thumbsup += thumbsup_change
+        self.thumbsdown += thumbsdown_change
+        self.save_variables()
+        
+    
     def setup_bot_commands(self):
         # Event handler for when the bot is ready
         @self.bot.event
         async def on_ready():
             logging.info(f'Logged in as {self.bot.user.name}')
+
+
+        @self.bot.event
+        async def on_raw_reaction_add(payload):
+            bothelp_thread = self.bot.get_channel(payload.channel_id)
+            if not isinstance(bothelp_thread, discord.Thread):
+                #logging.info("Wrong channel for reaction")
+                return
+            thread_parent=bothelp_thread.parent
+            if self.bothelp_name != thread_parent.name:
+                #logging.info("Wrong channel for ask")
+                return
+            reaction_message = await bothelp_thread.fetch_message(payload.message_id)
+            if reaction_message.author.name == "groqbot":
+                #print(reaction)
+                if str(payload.emoji) == "👍":
+                    self.update_variables(thumbsup_change=1, thumbsdown_change=0)
+                elif str(payload.emoji) == "👎":
+                    self.update_variables(thumbsup_change=0, thumbsdown_change=1)
+                else:
+                    return
+                
+        @self.bot.event
+        async def on_raw_reaction_remove(payload):
+            bothelp_thread = self.bot.get_channel(payload.channel_id)
+            if not isinstance(bothelp_thread, discord.Thread):
+                #logging.info("Wrong channel for reaction")
+                return
+            thread_parent=bothelp_thread.parent
+            if self.bothelp_name != thread_parent.name:
+                #logging.info("Wrong channel for ask")
+                return
+            reaction_message = await bothelp_thread.fetch_message(payload.message_id)
+            if reaction_message.author.name == "groqbot":
+                #print(reaction)
+                if str(payload.emoji) == "👍":
+                    self.update_variables(thumbsup_change=-1, thumbsdown_change=0)
+                elif str(payload.emoji) == "👎":
+                    self.update_variables(thumbsup_change=0, thumbsdown_change=-1)
+                else:
+                    return
+
 
         @self.bot.event
         async def on_error(event_method, *args, **kwargs):
@@ -60,38 +135,85 @@ class DiscordBot():
         # General message listener to check if the bot receives any messages
         @self.bot.event
         async def on_message(message):
-            logging.info(f'Message from {message.author}: {message.content}')
+            #logging.info(f'Message from {message.author}: {message.content}')
             await self.bot.process_commands(message)
 
         # Command to get a question from the user
         @self.bot.command(name='ask')
         async def ask_question(ctx, *, question: str):
-            bothelp_channel = self.get_channel(self.bothelp_name)
-            if ctx.channel != bothelp_channel:
+            bothelp_thread = ctx.channel
+            if not isinstance(bothelp_thread, discord.Thread):
+                logging.info("Wrong channel for ask")
+                return
+            thread_parent=bothelp_thread.parent
+            if self.bothelp_name != thread_parent.name:
                 logging.info("Wrong channel for ask")
                 return
             logging.info(f'Question from {ctx.author}: {question}')
-            #await self.send_response("Hello world", ctx.message)
-            self.question_lists.append(ctx.message)
 
-    async def send_response(self, response, message):
-        #channel_id = YOUR_CHANNEL_ID  # Replace with your channel ID
-        #channel = self.bot.get_channel(channel)
-        response_thread = await message.create_thread(name=message.content)
-        await response_thread.send(response)
+            thread_messages=await self.getthreadmessages(bothelp_thread)
+            logging.info(thread_messages)
+            #question=thread_messages+ctx.message
+            # if isinstance(ctx.channel, discord.Thread):
+            #     thread_id = message.channel.id
+            #     if thread_id in self.thread_contexts:
+            #         self.thread_contexts[thread_id].append(message.content)
+            #     else:
+            #         self.thread_contexts[thread_id] = [message.content]
+
+            #await self.send_response("Hello world", ctx.message)
+            self.question_lists.append([thread_messages, bothelp_thread])
+
+    async def getthreadmessages(self, bothelp_thread):
+        messages = ""
+        async for message in bothelp_thread.history(limit=None, oldest_first=True):
+            messages+="<author>"+str(message.author)+"</author>"
+            messages+="<message>"+message.content+"</message>"
+            messages+="   \n"
+
+        return messages
+
+    async def send_response(self, response, bothelp_thread):
+        logging.info("sending response now")
+        #response_thread = await message.create_thread(name=message.content)
+        await bothelp_thread.send(response)
+    
+    async def returnchannelid(self, channel_name):
+        guild=self.bot.get_guild(self.guildid)
+        for channel in guild.text_channels:
+            if channel_name == channel.name:
+                return channel.id
+        for channel in guild.forums:
+            if channel_name == channel.name:
+                return channel.id
+    
+    async def returnthreadid(self, channel_id, threadname):
+        channel= self.bot.get_channel(channel_id)
+        for thread in channel.threads:
+            if thread.name == threadname:
+                return thread.id
+    
+    def returnguildid(self):
+        guilds = self.bot.guilds
+        for guild in guilds:
+            if guild.name == self.guild_name:
+                self.guildid=guild.id
+                return self.guildid
 
     def get_channel(self, channel_name):
         guilds = self.bot.guilds
         for guild in guilds:
             if guild.name == self.guild_name:
+                self.guildid=guild.id
                 for channel in guild.text_channels:
                     if channel_name == channel.name:
                         return channel
     
-    async def human_support(self, question):
-        human_support_channel = self.get_channel(self.humansupport_name)
-        support_message = await human_support_channel.send(question.content)
-        await support_message.add_reaction("⭐")
+    async def human_support(self, bothelp_thread):
+        await bothelp_thread.send("Please sit tight while a community member answers your question")
+        # human_support_channel = self.get_channel(self.humansupport_name)
+        # support_message = await human_support_channel.send(question.content)
+        # await support_message.add_reaction("⭐")
 
     #split up process to run in parallel
     async def start(self):
@@ -135,7 +257,7 @@ class DiscordBot():
 
 async def main():
     questions_list = []
-    bot = DiscordBot("escalate-to-human", "ask-bot-help", "AV AIChatbot Server", questions_list)
+    bot = DiscordBot("escalate-to-human", "help-channel", "AV AIChatbot Server", questions_list)
     await bot.start()
     await asyncio.sleep(10)
     logging.info("Running")
